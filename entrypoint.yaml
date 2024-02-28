@@ -128,8 +128,8 @@ actions:
         capture: TAG_VERSIONS
         capture_strip: true
 
-      #- docker_login
-      #- docker_registry_push
+      - docker_login
+      - docker_registry_push
 
   # Steps to perform when building on main branch
   push_branch_main:
