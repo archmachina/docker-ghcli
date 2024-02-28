@@ -1,0 +1,172 @@
+---
+version: "1"
+
+env:
+  DEFAULT_SEMVER: ''
+
+  # Github release parameters
+  GITHUB_OWNER: archmachina
+  GITHUB_REPO: docker-ghcli
+
+  # Registry release parameters
+  REGISTRY_USERNAME: archmachina
+  REGISTRY_HOST: docker.io
+  REGISTRY_IMAGE: "docker.io/archmachina/ghcli"
+
+steps:
+  gen_dev_version:
+    type: command
+    interpreter: /bin/bash
+    command: echo "0.1.0-dev+$(git log -1 --format=%h)"
+    capture: DEFAULT_SEMVER
+    capture_strip: true
+
+  semver:
+    type: semver
+    required: $SEMVER_REQUIRED
+    sources:
+      - GITHUB_REF
+      - DEFAULT_SEMVER
+
+  docker_build_version:
+    type: command
+    interpreter: /bin/bash
+    command: echo "$(date -u --iso-8601=s) git:$(git log -1 --format=%h) $SEMVER_FULL"
+    capture: BUILD_VERSION
+    capture_strip: true
+
+  # Perform a docker build of the image
+  docker_build:
+    type: command
+    interpreter: /bin/bash
+    command: docker build --build-arg BUILD_VERSION="${BUILD_VERSION}" -f source/Dockerfile source
+
+  # Perform a docker build and capture the SHA of the resulting build (-q argument)
+  docker_build_sha:
+    type: command
+    interpreter: /bin/bash
+    command: docker build --build-arg BUILD_VERSION="${BUILD_VERSION}" -q -f source/Dockerfile source
+    capture: DOCKER_IMAGE_SHA
+    capture_strip: true
+
+  docker_login:
+    type: command
+    interpreter: /bin/bash
+    env:
+      REGISTRY_TOKEN: $SECRET_REGISTRY_TOKEN
+    command: docker login --password-stdin -u "${REGISTRY_USERNAME}" "${REGISTRY_HOST}" < <(echo "${REGISTRY_TOKEN}")
+
+  docker_registry_push:
+    type: command
+    interpreter: /bin/bash
+    command: |
+      set -e
+      set -o pipefail
+
+      # The '+' character isn't valid in a docker tag name, so replace with an
+      # underscore.
+      SEMVER_FULL=${SEMVER_FULL//+/_/}
+
+      # Define all of the tags that will apply for this image
+      if [ "$SEMVER_FULL" != "" ] ; then
+        TAG_VERSIONS="$TAG_VERSIONS ${SEMVER_FULL}"
+        [ "$SEMVER_PRERELEASE" == "" ] && TAG_VERSIONS="$TAG_VERSIONS ${SEMVER_MAJOR}"
+        [ "$SEMVER_PRERELEASE" == "" ] && TAG_VERSIONS="$TAG_VERSIONS ${SEMVER_MAJOR}.${SEMVER_MINOR}"
+        [ "$SEMVER_PRERELEASE" == "" ] && TAG_VERSIONS="$TAG_VERSIONS ${SEMVER_MAJOR}.${SEMVER_MINOR}.${SEMVER_PATCH}"
+      fi
+
+      echo "Tag Versions: $TAG_VERSIONS"
+      for TAG in $TAG_VERSIONS ; do
+        [ "$TAG" == "" ] && continue
+
+        # Tag and push the image defined earlier
+        docker tag "${DOCKER_IMAGE_SHA}" "${REGISTRY_IMAGE}:${TAG}"
+        docker push "${REGISTRY_IMAGE}:${TAG}"
+      done
+
+actions:
+  # Steps for a manually triggered build
+  build:
+    env:
+      SEMVER_REQUIRED: false
+    steps:
+      # gen_dev_version will generate a default semver version for this build
+      - gen_dev_version
+      - semver
+      - docker_build_version
+      - docker_build
+
+  # Steps for a pull request to the main branch
+  pr_branch_main:
+    env:
+      SEMVER_REQUIRED: false
+    steps:
+      # gen_dev_version will generate a default semver version for this build
+      - gen_dev_version
+      - semver
+      - docker_build_version
+      - docker_build
+
+  # Steps to perform when building on main branch
+  cron_schedule:
+    env:
+      SEMVER_REQUIRED: false
+    steps:
+      - docker_build_version
+      - docker_build
+      - docker_build_sha
+      - name: Capture version
+        type: bash
+        command: |
+          docker run --rm -i --entrypoint /usr/bin/dpkg-query "${DOCKER_IMAGE_SHA}" --showformat "\${Version}" --show gh
+        capture: GHCLI_VERSION
+
+      - name: tag versions
+        type: bash
+        command: |
+          echo "latest ${GHCLI_VERSION}"
+        capture: TAG_VERSIONS
+        capture_strip: true
+
+      #- docker_login
+      #- docker_registry_push
+
+  # Steps to perform when building on main branch
+  push_branch_main:
+    env:
+      SEMVER_REQUIRED: false
+      TAG_VERSIONS: "latest"
+    steps:
+      - semver
+      - docker_build_version
+      - docker_build
+      - docker_build_sha
+      - docker_login
+      - docker_registry_push
+
+  # Steps to perform when building from a git tag
+  push_tag_v:
+    env:
+      SEMVER_REQUIRED: true
+    steps:
+      - semver
+      - docker_build_version
+      - docker_build
+      - docker_build_sha
+      - docker_login
+      - docker_registry_push
+      - name: github_release
+        type: github_release
+        owner: $GITHUB_OWNER
+        repo: $GITHUB_REPO
+        token: $GITHUB_TOKEN
+        payload: |
+          {
+            "tag_name": "$SEMVER_FULL",
+            "name": "Version $SEMVER_FULL",
+            "draft": false,
+            "prerelease": $SEMVER_IS_PRERELEASE_WORD,
+            "generate_release_notes": true
+          }
+        env:
+          GITHUB_TOKEN: $SECRET_GITHUB_TOKEN

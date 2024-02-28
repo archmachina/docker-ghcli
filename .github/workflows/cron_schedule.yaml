@@ -1,0 +1,25 @@
+---
+
+name: cron_schedule
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 1 * * 0'
+
+jobs:
+  cron_schedule:
+    name: "cron_schedule"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: cron_schedule
+        shell: bash
+        run: |
+          ./entrypoint cron_schedule
+        env:
+          SECRET_REGISTRY_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
