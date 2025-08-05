@@ -1,0 +1,6 @@
+#!/bin/bash
+
+exec /usr/bin/gh
+
+exit 1
+

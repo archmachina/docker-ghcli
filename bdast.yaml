@@ -1,0 +1,69 @@
+---
+version: "2alpha"
+
+vars:
+  github_owner: archmachina
+  github_repo: docker-ghcli
+
+  docker_file: "./src/Dockerfile"
+  docker_dir: "./src/"
+  docker_username: "archmachina"
+  docker_host: "docker.io"
+  docker_image: "archmachina/ghcli"
+  docker_token: "{{ env.SECRET_REGISTRY_TOKEN }}"
+  docker_build_args:
+    - "VERSION={{ version.full }}"
+
+include:
+  - .bdast/common.yaml
+  - .bdast/docker.yaml
+
+actions:
+
+  # Overrides for 'common' actions to perform actions
+  # specific to this repo
+
+  # Steps to perform when building on main branch
+  push_branch_main:
+    steps:
+      - +build
+      - +test
+
+  # Steps to perform when building from a git tag v*
+  push_tag_v:
+    steps:
+      - +build
+      - +test
+      - github_release
+
+  cron_schedule:
+    steps:
+      - +build
+      - +test
+
+      - name: Capture version from docker image
+        command:
+          cmd: >
+            docker run --rm -i --entrypoint /usr/bin/dpkg-query "{{ docker_build_sha }}" --showformat "${Version}" --show gh
+          capture_strip: true
+          capture: ghcli_version
+
+      - name: Parse ghcli version
+        semver:
+          required: true
+          sources:
+            - "{{ ghcli_version }}"
+          store: version
+
+      - name: Set docker tags
+        vars:
+          set:
+            docker_tags:
+              - main
+              - latest
+              - "{{ version.major }}"
+              - "{{ version.major }}.{{ version.minor }}"
+              - "{{ version.major }}.{{ version.minor }}.{{ version.patch }}"
+
+      - docker_push
+
